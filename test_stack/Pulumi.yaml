@@ -1,0 +1,3 @@
+name: test_stack
+description: A minimal AWS C# Pulumi program
+runtime: dotnet

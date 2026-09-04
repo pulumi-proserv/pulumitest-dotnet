@@ -1,0 +1,318 @@
+// Copyright 2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace PulumiTest.Tests;
+
+/// <summary>Test PulumiProgram construction and operations (no cloud credentials needed).</summary>
+public class PulumiProgramTests : IDisposable
+{
+    private readonly FakeBackend _backend = new();
+    private readonly string _sandbox;
+    private readonly string _source;
+
+    public PulumiProgramTests()
+    {
+        _sandbox = Path.Combine(Path.GetTempPath(), "pulumitest-" + Guid.NewGuid().ToString("N")[..8]);
+        _source = Path.Combine(_sandbox, "my_program");
+        Directory.CreateDirectory(Path.Combine(_source, "nested"));
+        File.WriteAllText(Path.Combine(_source, "Pulumi.yaml"), "name: my_program\nruntime: dotnet\n");
+        File.WriteAllText(Path.Combine(_source, "Program.cs"), "// v1\n");
+        File.WriteAllText(Path.Combine(_source, "nested", "file.txt"), "nested\n");
+    }
+
+    public void Dispose()
+    {
+        Directory.Delete(_sandbox, recursive: true);
+    }
+
+    private Task<PulumiProgram> CreateAsync(params Option[] opts)
+        => PulumiProgram.CreateAsync("test_stack", _backend, null, NullLogger.Instance, default, opts);
+
+    private Task<PulumiProgram> CreateAsync(ILogger logger, params Option[] opts)
+        => PulumiProgram.CreateAsync("test_stack", _backend, null, logger, default, opts);
+
+    [Fact]
+    public async Task Create_InitializesWithoutCopyingOrCreatingStack()
+    {
+        var program = await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate());
+
+        Assert.Equal("test_stack", program.WorkingDir);
+        Assert.True(program.Options.TestInPlace);
+        Assert.True(program.Options.SkipInstall);
+        Assert.True(program.Options.SkipStackCreate);
+        Assert.Null(program.CurrentStack);
+        Assert.Single(_backend.WorkspaceCalls);
+        Assert.Equal("test_stack", _backend.WorkspaceCalls[0].WorkDir);
+        Assert.Equal(0, _backend.Workspace.InstallCalls);
+        Assert.Empty(_backend.Workspace.StackNames);
+    }
+
+    [Fact]
+    public async Task Create_CreatesStackWhenNotSkipped()
+    {
+        await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall());
+        Assert.Equal(new[] { "test" }, _backend.Workspace.StackNames);
+    }
+
+    [Fact]
+    public async Task Create_RunsInstallWhenNotSkipped()
+    {
+        await CreateAsync(OptTest.TestInPlace(), OptTest.SkipStackCreate());
+        Assert.Equal(1, _backend.Workspace.InstallCalls);
+    }
+
+    [Fact]
+    public async Task Create_UsesCustomStackName()
+    {
+        await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.StackName("custom"));
+        Assert.Equal(new[] { "custom" }, _backend.Workspace.StackNames);
+    }
+
+    [Fact]
+    public async Task Create_ExposesEnvVars()
+    {
+        var program = await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate());
+
+        var envVars = program.GetEnvVars();
+        Assert.Equal("correct horse battery staple", envVars["PULUMI_CONFIG_PASSPHRASE"]);
+        Assert.Contains("PULUMI_BACKEND_URL", envVars.Keys);
+    }
+
+    [Fact]
+    public async Task Create_UsesCustomConfigPassphrase()
+    {
+        var program = await CreateAsync(
+            OptTest.TestInPlace(),
+            OptTest.SkipInstall(),
+            OptTest.SkipStackCreate(),
+            OptTest.ConfigPassphrase("hunter2"));
+        Assert.Equal("hunter2", program.GetEnvVars()["PULUMI_CONFIG_PASSPHRASE"]);
+    }
+
+    [Fact]
+    public async Task Create_PassesEnvVarsToWorkspace()
+    {
+        var program = await CreateAsync(
+            OptTest.TestInPlace(),
+            OptTest.SkipInstall(),
+            OptTest.Env("PULUMI_BACKEND_URL", "file:///tmp/test-backend"),
+            OptTest.Env("MY_CUSTOM_VAR", "hello"));
+
+        var expected = new Dictionary<string, string>
+        {
+            ["PULUMI_BACKEND_URL"] = "file:///tmp/test-backend",
+            ["PULUMI_CONFIG_PASSPHRASE"] = "correct horse battery staple",
+            ["MY_CUSTOM_VAR"] = "hello",
+        };
+        Assert.Equal(expected, program.GetEnvVars());
+        Assert.Equal(expected, _backend.WorkspaceCalls[0].Env);
+    }
+
+    [Fact]
+    public async Task Create_DropsEmptyEnvVarsBeforePassingToWorkspace()
+    {
+        var saved = Environment.GetEnvironmentVariable("PULUMI_BACKEND_URL");
+        Environment.SetEnvironmentVariable("PULUMI_BACKEND_URL", null);
+        try
+        {
+            await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PULUMI_BACKEND_URL", saved);
+        }
+
+        Assert.Equal(
+            new Dictionary<string, string> { ["PULUMI_CONFIG_PASSPHRASE"] = "correct horse battery staple" },
+            _backend.WorkspaceCalls[0].Env);
+    }
+
+    [Fact]
+    public async Task Operations_ThrowWhenStackNotInitialized()
+    {
+        var program = await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => program.UpAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => program.PreviewAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => program.RefreshAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => program.DestroyAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => program.AddEnvironmentsAsync("a/b"));
+    }
+
+    [Fact]
+    public async Task Operations_ForwardToStack()
+    {
+        var program = await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall());
+
+        var up = await program.UpAsync();
+        Assert.Equal("up output", up.StandardOutput);
+        var preview = await program.PreviewAsync();
+        Assert.Empty(preview.ChangeSummary);
+        var refresh = await program.RefreshAsync();
+        Assert.Null(refresh.ChangeSummary);
+        await program.DestroyAsync();
+        await program.AddEnvironmentsAsync("aws/dev", "shared/base");
+
+        var stack = _backend.Workspace.Stack;
+        Assert.Equal(1, stack.UpCalls);
+        Assert.Equal(1, stack.PreviewCalls);
+        Assert.Equal(1, stack.RefreshCalls);
+        Assert.Equal(1, stack.DestroyCalls);
+        Assert.Equal(0, stack.RemoveCalls);
+        Assert.Equal(new[] { "aws/dev", "shared/base" }, stack.Environments);
+    }
+
+    [Fact]
+    public async Task Cleanup_IsSafeWhenNoStackExists()
+    {
+        var program = await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate());
+
+        await program.CleanupAsync();
+        await program.CleanupAsync(raiseOnError: true);
+
+        Assert.Equal(0, _backend.Workspace.Stack.DestroyCalls);
+    }
+
+    [Fact]
+    public async Task Cleanup_DestroysAndRemovesStack()
+    {
+        var program = await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall());
+
+        await program.CleanupAsync();
+
+        Assert.Equal(1, _backend.Workspace.Stack.DestroyCalls);
+        Assert.Equal(1, _backend.Workspace.Stack.RemoveCalls);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_RunsCleanup()
+    {
+        var program = await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall());
+
+        await program.DisposeAsync();
+
+        Assert.Equal(1, _backend.Workspace.Stack.DestroyCalls);
+        Assert.Equal(1, _backend.Workspace.Stack.RemoveCalls);
+    }
+
+    [Fact]
+    public async Task Cleanup_SwallowsDestroyErrorByDefault()
+    {
+        var logger = new CapturingLogger();
+        var program = await CreateAsync(logger, OptTest.TestInPlace(), OptTest.SkipInstall());
+        _backend.Workspace.Stack.DestroyError = new InvalidOperationException("destroy failed: resource still in use");
+
+        await program.CleanupAsync();
+
+        Assert.Equal(1, _backend.Workspace.Stack.DestroyCalls);
+        Assert.Equal(0, _backend.Workspace.Stack.RemoveCalls);
+        var error = Assert.Single(logger.Entries, e => e.Level == LogLevel.Error);
+        Assert.Contains("Destroy failed for stack 'test'", error.Message);
+        Assert.Same(_backend.Workspace.Stack.DestroyError, error.Exception);
+    }
+
+    [Fact]
+    public async Task Cleanup_RethrowsDestroyErrorWhenRequested()
+    {
+        var program = await CreateAsync(OptTest.TestInPlace(), OptTest.SkipInstall());
+        _backend.Workspace.Stack.DestroyError = new InvalidOperationException("destroy failed: resource still in use");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => program.CleanupAsync(raiseOnError: true));
+
+        Assert.Contains("destroy failed", ex.Message);
+        Assert.Equal(1, _backend.Workspace.Stack.DestroyCalls);
+    }
+
+    [Fact]
+    public async Task Create_CopiesProgramToTempDirByDefault()
+    {
+        var tempDir = Path.Combine(_sandbox, "tmp");
+        var program = await PulumiProgram.CreateAsync(
+            _source, _backend, null, NullLogger.Instance, default,
+            OptTest.SkipInstall(), OptTest.SkipStackCreate(), OptTest.TempDir(tempDir));
+
+        Assert.NotEqual(_source, program.WorkingDir);
+        Assert.Equal("my_program", Path.GetFileName(program.WorkingDir));
+        var programDir = Path.GetDirectoryName(program.WorkingDir)!;
+        Assert.Equal(tempDir, Path.GetDirectoryName(programDir));
+        Assert.Matches("^programDir_[0-9a-f]{8}$", Path.GetFileName(programDir));
+        Assert.Equal("// v1\n", File.ReadAllText(Path.Combine(program.WorkingDir, "Program.cs")));
+        Assert.Equal("nested\n", File.ReadAllText(Path.Combine(program.WorkingDir, "nested", "file.txt")));
+        Assert.Equal(program.WorkingDir, _backend.WorkspaceCalls[0].WorkDir);
+    }
+
+    [Fact]
+    public async Task UpdateSource_ReplacesFilesButPreservesProjectAndState()
+    {
+        var program = await PulumiProgram.CreateAsync(
+            _source, _backend, null, NullLogger.Instance, default,
+            OptTest.SkipInstall(), OptTest.SkipStackCreate(), OptTest.TempDir(Path.Combine(_sandbox, "tmp")));
+        Directory.CreateDirectory(Path.Combine(program.WorkingDir, ".pulumi"));
+        File.WriteAllText(Path.Combine(program.WorkingDir, ".pulumi", "state"), "state\n");
+
+        var modified = Path.Combine(_sandbox, "modified");
+        Directory.CreateDirectory(Path.Combine(modified, ".pulumi"));
+        File.WriteAllText(Path.Combine(modified, "Pulumi.yaml"), "name: SHOULD_NOT_COPY\n");
+        File.WriteAllText(Path.Combine(modified, "Pulumi.test.yaml"), "config: {}\n");
+        File.WriteAllText(Path.Combine(modified, ".pulumi", "state"), "SHOULD_NOT_COPY\n");
+        File.WriteAllText(Path.Combine(modified, "Program.cs"), "// v2\n");
+        File.WriteAllText(Path.Combine(modified, "Extra.cs"), "// extra\n");
+
+        program.UpdateSource(modified);
+
+        string Read(string relative) => File.ReadAllText(Path.Combine(program.WorkingDir, relative));
+        Assert.Equal("// v2\n", Read("Program.cs"));
+        Assert.Equal("// extra\n", Read("Extra.cs"));
+        Assert.Equal("name: my_program\nruntime: dotnet\n", Read("Pulumi.yaml"));
+        Assert.Equal("state\n", Read(Path.Combine(".pulumi", "state")));
+        Assert.False(File.Exists(Path.Combine(program.WorkingDir, "Pulumi.test.yaml")));
+    }
+
+    [Fact]
+    public async Task CopyTo_CreatesInPlaceProgramInTargetDirectory()
+    {
+        var program = await PulumiProgram.CreateAsync(
+            _source, _backend, null, NullLogger.Instance, default,
+            OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate());
+
+        var target = Path.Combine(_sandbox, "copy");
+        var copy = await program.CopyToAsync(target, OptTest.StackName("copied"));
+
+        Assert.Equal(target, copy.WorkingDir);
+        Assert.True(copy.Options.TestInPlace);
+        Assert.True(copy.Options.SkipInstall);
+        Assert.Equal("copied", copy.Options.StackName);
+        Assert.Equal("test", program.Options.StackName);
+        Assert.Same(program.Logger, copy.Logger);
+        Assert.Equal("// v1\n", File.ReadAllText(Path.Combine(target, "Program.cs")));
+    }
+
+    [Fact]
+    public async Task CopyToTempDir_CreatesProgramUnderTempDirectory()
+    {
+        var tempDir = Path.Combine(_sandbox, "tmp");
+        var program = await PulumiProgram.CreateAsync(
+            _source, _backend, null, NullLogger.Instance, default,
+            OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate(), OptTest.TempDir(tempDir));
+
+        var copy = await program.CopyToTempDirAsync();
+
+        Assert.True(copy.Options.TestInPlace);
+        Assert.Equal(tempDir, Path.GetDirectoryName(Path.GetDirectoryName(copy.WorkingDir)));
+        Assert.Equal("// v1\n", File.ReadAllText(Path.Combine(copy.WorkingDir, "Program.cs")));
+    }
+}

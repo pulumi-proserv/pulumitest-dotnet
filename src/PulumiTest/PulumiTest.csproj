@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net8.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>PulumiTest</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <PackageId>PulumiTest</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Jonathan Davenport</Authors>
+    <Company>Pulumi Corporation</Company>
+    <Description>.NET testing utilities for Pulumi programs</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/pulumi-proserv/pulumitest-dotnet</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/pulumi-proserv/pulumitest-dotnet</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>pulumi;testing;automation-api;infrastructure</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Pulumi.Automation" Version="3.113.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <InternalsVisibleTo Include="PulumiTest.Tests" />
+  </ItemGroup>
+
+</Project>
