@@ -455,14 +455,25 @@ public sealed class PulumiProgram : IAsyncDisposable
     /// </remarks>
     public IReadOnlyDictionary<string, string> GetEnvVars() => new Dictionary<string, string>(_envVars);
 
-    /// <summary>Copy the program to a new temporary directory.</summary>
-    public Task<PulumiProgram> CopyToTempDirAsync(params Option[] opts)
+    /// <summary>
+    /// Copy the program to a new temporary directory. The returned program owns
+    /// that directory and removes it in <see cref="CleanupAsync"/>.
+    /// </summary>
+    public async Task<PulumiProgram> CopyToTempDirAsync(params Option[] opts)
     {
-        var (_, destination) = CreateTempDir();
-        return CopyToAsync(destination, opts);
+        var (programDir, destination) = CreateTempDir();
+        var copy = await CopyToAsync(destination, opts).ConfigureAwait(false);
+        // The copy owns the directory this call created and removes it in CleanupAsync.
+        copy._ownedTempDir = programDir;
+        return copy;
     }
 
-    /// <summary>Copy the program to the specified directory.</summary>
+    /// <summary>
+    /// Copy the program to the specified directory. The caller chose the
+    /// directory, so the returned program does not remove it in
+    /// <see cref="CleanupAsync"/>; use <see cref="CopyToTempDirAsync"/> for a
+    /// self-cleaning copy.
+    /// </summary>
     public Task<PulumiProgram> CopyToAsync(string directory, params Option[] opts)
     {
         CopyToInternal(directory);

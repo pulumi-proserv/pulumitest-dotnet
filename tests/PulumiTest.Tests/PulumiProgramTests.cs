@@ -551,4 +551,35 @@ public class PulumiProgramTests : IDisposable
         Assert.Equal(_tempDir, Path.GetDirectoryName(Path.GetDirectoryName(copy.WorkingDir)));
         Assert.Equal("// v1\n", File.ReadAllText(Path.Combine(copy.WorkingDir, "Program.cs")));
     }
+
+    [Fact]
+    public async Task CopyToTempDir_CopyOwnsItsDirectoryAndRemovesItOnCleanup()
+    {
+        var program = await PulumiProgram.CreateAsync(
+            _source, _backend, null, NullLogger.Instance, default,
+            OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate(), OptTest.TempDir(_tempDir));
+
+        var copy = await program.CopyToTempDirAsync();
+        var programDir = Path.GetDirectoryName(copy.WorkingDir)!;
+        Assert.True(Directory.Exists(programDir));
+
+        await copy.CleanupAsync();
+
+        Assert.False(Directory.Exists(programDir));
+        Assert.True(Directory.Exists(_source));
+    }
+
+    [Fact]
+    public async Task CopyTo_CopyDoesNotRemoveCallerChosenDirectoryOnCleanup()
+    {
+        var program = await PulumiProgram.CreateAsync(
+            _source, _backend, null, NullLogger.Instance, default,
+            OptTest.TestInPlace(), OptTest.SkipInstall(), OptTest.SkipStackCreate(), OptTest.TempDir(_tempDir));
+
+        var target = Path.Combine(Path.GetDirectoryName(_source)!, "copy");
+        var copy = await program.CopyToAsync(target);
+        await copy.CleanupAsync();
+
+        Assert.True(File.Exists(Path.Combine(target, "Program.cs")));
+    }
 }
