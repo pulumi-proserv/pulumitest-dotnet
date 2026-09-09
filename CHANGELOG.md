@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `CleanupAsync()` no longer destroys a stack that existed before the run. Such a stack is selected, `StackPreexisted` is set, and destroy is skipped unless `OptTest.DestroyExistingStack()` is given
+- Each program now uses a private local file backend by default; `OptTest.UseAmbientBackend()` opts into the `pulumi login` backend as the option always documented
+- The temporary copy of the program excludes `.git`, `.env*`, `node_modules`, `bin`, `obj`, `__pycache__`, `.venv`, `venv`, and `.terraform`, skips symlinks that escape the program directory, is created readable only by the current user, and is deleted by `CleanupAsync()` (`OptTest.KeepTempDir()` keeps it)
+- Documented that the default config passphrase is public and that `GetEnvVars()` returns secrets
+- Bumped `Pulumi.Automation` to 3.113.2 and dropped the unsupported `net6.0` target framework
+- Added `SECURITY.md` and Dependabot configuration
+
 ### Added
 
 - `PulumiProgram` API for testing Pulumi programs using the Automation API, ported from [pulumitest-python](https://github.com/pulumi-labs/pulumitest-python)

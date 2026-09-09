@@ -52,12 +52,34 @@ public sealed class PulumiProgram : IAsyncDisposable
         "Pulumi.test.yaml",
     };
 
+    /// <summary>
+    /// Directory and file names never copied from the program under test.
+    /// </summary>
+    /// <remarks>
+    /// These hold credentials (<c>.env*</c>), history that may contain old
+    /// secrets (<c>.git</c>), or build output that is large and reproducible.
+    /// </remarks>
+    public static readonly IReadOnlySet<string> ExcludedNames = new HashSet<string>(StringComparer.Ordinal)
+    {
+        ".git",
+        ".env",
+        "node_modules",
+        "bin",
+        "obj",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".terraform",
+    };
+
     private static int _loggerCounter;
 
     private readonly IAutomationBackend _backend;
     private readonly Dictionary<string, string> _envVars;
     private IWorkspaceHandle? _workspace;
     private IStackHandle? _stack;
+    private string? _ownedTempDir;
+    private string? _backendDir;
 
     /// <summary>The directory the program runs from. A temp copy unless <see cref="OptTest.TestInPlace"/> is set.</summary>
     public string WorkingDir { get; private set; }
@@ -74,6 +96,13 @@ public sealed class PulumiProgram : IAsyncDisposable
     /// <summary>The local workspace, or null before initialization.</summary>
     public LocalWorkspace? LocalWorkspace => _workspace?.Workspace;
 
+    /// <summary>
+    /// True when the stack already existed and was selected rather than
+    /// created. <see cref="CleanupAsync"/> refuses to destroy such a stack
+    /// unless <see cref="OptTest.DestroyExistingStack"/> was given.
+    /// </summary>
+    public bool StackPreexisted { get; private set; }
+
     private PulumiProgram(string workingDir, Options options, ILogger logger, IAutomationBackend backend)
     {
         WorkingDir = workingDir;
@@ -81,18 +110,12 @@ public sealed class PulumiProgram : IAsyncDisposable
         Logger = logger;
         _backend = backend;
 
-        // Custom env vars from the Env() option take precedence over defaults.
         _envVars = new Dictionary<string, string>
         {
-            ["PULUMI_BACKEND_URL"] = Environment.GetEnvironmentVariable("PULUMI_BACKEND_URL") ?? "",
             ["PULUMI_CONFIG_PASSPHRASE"] = string.IsNullOrEmpty(options.ConfigPassphrase)
-                ? "correct horse battery staple"
+                ? OptTest.DefaultConfigPassphrase
                 : options.ConfigPassphrase,
         };
-        foreach (var kv in options.CustomEnv)
-        {
-            _envVars[kv.Key] = kv.Value;
-        }
     }
 
     /// <summary>
@@ -136,11 +159,13 @@ public sealed class PulumiProgram : IAsyncDisposable
 
         if (!program.Options.TestInPlace)
         {
-            var destination = program.CreateTempDir();
+            var (programDir, destination) = program.CreateTempDir();
+            program._ownedTempDir = programDir;
             program.CopyToInternal(destination);
             program.WorkingDir = destination;
         }
 
+        program.ConfigureBackend();
         await program.InitStackAsync(cancellationToken).ConfigureAwait(false);
         return program;
     }
@@ -148,27 +173,98 @@ public sealed class PulumiProgram : IAsyncDisposable
     private static ILogger CreateDefaultLogger()
         => new ConsoleLogger($"PulumiProgram-{Interlocked.Increment(ref _loggerCounter)}");
 
-    private string CreateTempDir()
+    private static string ShortId() => Guid.NewGuid().ToString("N")[..8];
+
+    /// <summary>
+    /// Create a directory readable only by the current user. On Windows,
+    /// where POSIX permission bits do not apply, the default ACL is used.
+    /// </summary>
+    private static void CreatePrivateDirectory(string path)
     {
-        var baseDir = string.IsNullOrEmpty(Options.TempDir)
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(path);
+        }
+        else
+        {
+            Directory.CreateDirectory(
+                path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    private static bool IsExcludedName(string name)
+        => ExcludedNames.Contains(name) || name.StartsWith(".env.", StringComparison.Ordinal);
+
+    private string TempBase()
+        => string.IsNullOrEmpty(Options.TempDir)
             ? Path.Combine(Directory.GetCurrentDirectory(), "tmp")
             : Options.TempDir;
-        Directory.CreateDirectory(baseDir);
 
-        var tempPath = Path.Combine(baseDir, "programDir_" + Guid.NewGuid().ToString("N")[..8]);
-        Logger.LogInformation("Creating temp directory {TempDir}", Path.GetFileName(tempPath));
+    /// <summary>
+    /// Create <c>&lt;tempBase&gt;/programDir_&lt;id&gt;/&lt;program name&gt;</c>.
+    /// </summary>
+    /// <remarks>
+    /// Directories are private to the current user because the copy may
+    /// include stack config and state.
+    /// </remarks>
+    private (string ProgramDir, string Destination) CreateTempDir()
+    {
+        var baseDir = TempBase();
+        CreatePrivateDirectory(baseDir);
+
+        var programDir = Path.Combine(baseDir, "programDir_" + ShortId());
+        Logger.LogInformation("Creating temp directory {TempDir}", Path.GetFileName(programDir));
+        // Created one level at a time: when a multi-level path is created in a
+        // single call, only the final (leaf) directory gets the requested
+        // mode and intermediate directories fall back to the default mode.
+        CreatePrivateDirectory(programDir);
 
         var sourceBase = Path.GetFileName(Path.GetFullPath(WorkingDir).TrimEnd(Path.DirectorySeparatorChar));
-        var destination = Path.Combine(tempPath, sourceBase);
-        Directory.CreateDirectory(destination);
-        return destination;
+        var destination = Path.Combine(programDir, sourceBase);
+        CreatePrivateDirectory(destination);
+        return (programDir, destination);
+    }
+
+    /// <summary>
+    /// Pick the backend. Precedence: an explicit <c>Env("PULUMI_BACKEND_URL", ...)</c>,
+    /// then the ambient backend if <see cref="OptTest.UseAmbientBackend"/> was
+    /// given (the CLI inherits the process environment on its own), otherwise
+    /// a private local file backend so test stacks never reach a shared backend.
+    /// </summary>
+    private void ConfigureBackend()
+    {
+        if (!Options.CustomEnv.ContainsKey("PULUMI_BACKEND_URL") && !Options.UseAmbientBackend)
+        {
+            string backendDir;
+            if (_ownedTempDir is not null)
+            {
+                backendDir = Path.Combine(_ownedTempDir, "backend");
+            }
+            else
+            {
+                var baseDir = TempBase();
+                CreatePrivateDirectory(baseDir);
+                backendDir = Path.Combine(baseDir, "backend_" + ShortId());
+            }
+
+            CreatePrivateDirectory(backendDir);
+            _backendDir = backendDir;
+            _envVars["PULUMI_BACKEND_URL"] = new Uri(backendDir).AbsoluteUri;
+        }
+
+        // Custom env vars from the Env() option take precedence over defaults.
+        foreach (var kv in Options.CustomEnv)
+        {
+            _envVars[kv.Key] = kv.Value;
+        }
     }
 
     private void CopyToInternal(string directory)
     {
         try
         {
-            CopyDirectory(WorkingDir, directory, preserveTopLevel: null);
+            CopyDirectory(WorkingDir, directory, WorkingDir, new[] { directory, TempBase() }, preserveTopLevel: null);
         }
         catch (IOException e)
         {
@@ -179,7 +275,7 @@ public sealed class PulumiProgram : IAsyncDisposable
     private async Task InitStackAsync(CancellationToken cancellationToken)
     {
         Logger.LogInformation("Creating local workspace...");
-        _workspace = await _backend.CreateWorkspaceAsync(WorkingDir, WorkspaceEnvVars(), cancellationToken)
+        _workspace = await _backend.CreateWorkspaceAsync(WorkingDir, _envVars, cancellationToken)
             .ConfigureAwait(false);
 
         if (!Options.SkipInstall)
@@ -192,7 +288,19 @@ public sealed class PulumiProgram : IAsyncDisposable
         {
             var stackName = string.IsNullOrEmpty(Options.StackName) ? DefaultStackName : Options.StackName;
             Logger.LogInformation("Running pulumi stack init... (stack: {StackName})", stackName);
-            _stack = await _workspace.CreateOrSelectStackAsync(stackName, cancellationToken).ConfigureAwait(false);
+            var (stack, preExisted) = await _workspace.CreateOrSelectStackAsync(stackName, cancellationToken)
+                .ConfigureAwait(false);
+            _stack = stack;
+            StackPreexisted = preExisted;
+            if (preExisted)
+            {
+                Logger.LogInformation(
+                    "Stack '{StackName}' already existed and was selected, not created. {Action}",
+                    stackName,
+                    Options.DestroyExistingStack
+                        ? "CleanupAsync() will destroy it because DestroyExistingStack() was given."
+                        : "CleanupAsync() will leave it in place; pass OptTest.DestroyExistingStack() to destroy it.");
+            }
         }
         else
         {
@@ -200,16 +308,16 @@ public sealed class PulumiProgram : IAsyncDisposable
         }
     }
 
-    /// <summary>Env vars to hand to the Automation API, with empty values dropped.</summary>
-    private Dictionary<string, string>? WorkspaceEnvVars()
-    {
-        var result = _envVars.Where(kv => kv.Value != "").ToDictionary(kv => kv.Key, kv => kv.Value);
-        return result.Count > 0 ? result : null;
-    }
-
     /// <summary>
-    /// Destroy and remove the stack. Register with your test framework's teardown.
+    /// Destroy and remove the stack, then delete the temporary copy of the
+    /// program. Register with your test framework's teardown hook.
     /// </summary>
+    /// <remarks>
+    /// A stack that existed before this run is left untouched unless
+    /// <see cref="OptTest.DestroyExistingStack"/> was given. The temporary
+    /// directory is kept when the destroy fails, so the state is available
+    /// for inspection, or when <see cref="OptTest.KeepTempDir"/> was given.
+    /// </remarks>
     /// <param name="raiseOnError">
     /// Re-throw if the destroy fails. Defaults to false to preserve existing
     /// behaviour, but a failed destroy leaves real cloud resources behind, so
@@ -221,6 +329,15 @@ public sealed class PulumiProgram : IAsyncDisposable
         if (_stack is null)
         {
             Logger.LogInformation("No current stack, skipping destroy...");
+            RemoveTempDirs();
+            return;
+        }
+
+        if (StackPreexisted && !Options.DestroyExistingStack)
+        {
+            Logger.LogInformation(
+                "Stack '{StackName}' existed before this run; leaving it in place. Pass OptTest.DestroyExistingStack() to destroy it.",
+                _stack.Name);
             return;
         }
 
@@ -239,6 +356,26 @@ public sealed class PulumiProgram : IAsyncDisposable
             if (raiseOnError)
             {
                 throw;
+            }
+
+            return;
+        }
+
+        RemoveTempDirs();
+    }
+
+    private void RemoveTempDirs()
+    {
+        if (Options.KeepTempDir)
+        {
+            return;
+        }
+
+        foreach (var dir in new[] { _ownedTempDir, _backendDir })
+        {
+            if (dir is not null && Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
             }
         }
     }
@@ -289,9 +426,10 @@ public sealed class PulumiProgram : IAsyncDisposable
     public void UpdateSource(string sourceDir)
     {
         Logger.LogInformation("Updating source from {SourceDir} to {WorkingDir}", sourceDir, WorkingDir);
+        var sourceRoot = Path.GetFullPath(sourceDir);
         try
         {
-            CopyDirectory(sourceDir, WorkingDir, preserveTopLevel: PreservedPaths);
+            CopyDirectory(sourceRoot, WorkingDir, sourceRoot, new[] { WorkingDir }, preserveTopLevel: PreservedPaths);
         }
         catch (IOException e)
         {
@@ -307,12 +445,22 @@ public sealed class PulumiProgram : IAsyncDisposable
     public Task AddEnvironmentsAsync(IEnumerable<string> environmentNames, CancellationToken cancellationToken)
         => RequireStack().AddEnvironmentsAsync(environmentNames, cancellationToken);
 
-    /// <summary>Get the environment variables for this workspace.</summary>
+    /// <summary>
+    /// Get the environment variables for this workspace.
+    /// </summary>
+    /// <remarks>
+    /// Includes the config passphrase and anything passed via
+    /// <see cref="OptTest.Env"/>, which may be credentials. Do not log the
+    /// returned dictionary.
+    /// </remarks>
     public IReadOnlyDictionary<string, string> GetEnvVars() => new Dictionary<string, string>(_envVars);
 
     /// <summary>Copy the program to a new temporary directory.</summary>
     public Task<PulumiProgram> CopyToTempDirAsync(params Option[] opts)
-        => CopyToAsync(CreateTempDir(), opts);
+    {
+        var (_, destination) = CreateTempDir();
+        return CopyToAsync(destination, opts);
+    }
 
     /// <summary>Copy the program to the specified directory.</summary>
     public Task<PulumiProgram> CopyToAsync(string directory, params Option[] opts)
@@ -326,7 +474,20 @@ public sealed class PulumiProgram : IAsyncDisposable
     private IStackHandle RequireStack()
         => _stack ?? throw new InvalidOperationException("Stack not initialized");
 
-    private static void CopyDirectory(string sourceDir, string destDir, HashSet<string>? preserveTopLevel)
+    /// <summary>
+    /// Recursive copy that skips <see cref="ExcludedNames"/>, refuses symlinks
+    /// whose resolved target lies outside <paramref name="sourceRoot"/>, and
+    /// never descends into any directory in <paramref name="avoid"/>
+    /// (typically the destination and the temp base, so copying a program
+    /// into its own subtree, e.g. the default <c>./tmp</c> under the source
+    /// directory, cannot recurse into itself).
+    /// </summary>
+    private static void CopyDirectory(
+        string sourceDir,
+        string destDir,
+        string sourceRoot,
+        IReadOnlyList<string> avoid,
+        HashSet<string>? preserveTopLevel)
     {
         var source = new DirectoryInfo(sourceDir);
         if (!source.Exists)
@@ -334,32 +495,78 @@ public sealed class PulumiProgram : IAsyncDisposable
             throw new DirectoryNotFoundException($"Source directory not found: {sourceDir}");
         }
 
-        Directory.CreateDirectory(destDir);
+        CreatePrivateDirectory(destDir);
+
         foreach (var entry in source.EnumerateFileSystemInfos())
         {
+            if (IsExcludedName(entry.Name))
+            {
+                continue;
+            }
+
             if (preserveTopLevel is not null && preserveTopLevel.Contains(entry.Name))
             {
                 continue;
             }
 
-            var target = Path.Combine(destDir, entry.Name);
-            if (entry.LinkTarget is not null)
+            var resolved = entry.FullName;
+            if (avoid.Any(a => IsSameOrUnder(resolved, a)))
             {
-                if (File.Exists(target) || Directory.Exists(target))
-                {
-                    File.Delete(target);
-                }
+                continue;
+            }
 
-                File.CreateSymbolicLink(target, entry.LinkTarget);
+            var target = Path.Combine(destDir, entry.Name);
+            var linkTarget = entry.LinkTarget;
+            var isReparsePoint = entry.Attributes.HasFlag(FileAttributes.ReparsePoint);
+
+            if (linkTarget is not null)
+            {
+                CopySymlinkIfSafe(entry, linkTarget, target, sourceRoot);
+            }
+            else if (isReparsePoint)
+            {
+                // A reparse point we can't resolve a target for; skip it rather
+                // than risk following it somewhere unexpected.
             }
             else if (entry is DirectoryInfo dir)
             {
-                CopyDirectory(dir.FullName, target, preserveTopLevel: null);
+                CopyDirectory(dir.FullName, target, sourceRoot, avoid, preserveTopLevel: null);
             }
             else
             {
                 File.Copy(entry.FullName, target, overwrite: true);
             }
         }
+    }
+
+    private static void CopySymlinkIfSafe(FileSystemInfo entry, string linkTarget, string target, string sourceRoot)
+    {
+        var baseDir = Path.GetDirectoryName(entry.FullName)!;
+        var resolvedTarget = Path.GetFullPath(linkTarget, baseDir);
+        var normalizedRoot = Path.GetFullPath(sourceRoot).TrimEnd(Path.DirectorySeparatorChar);
+        if (!IsSameOrUnder(resolvedTarget, normalizedRoot))
+        {
+            // Symlink target escapes the program directory; skip it.
+            return;
+        }
+
+        if (Directory.Exists(target))
+        {
+            Directory.Delete(target, recursive: true);
+        }
+        else if (File.Exists(target))
+        {
+            File.Delete(target);
+        }
+
+        File.CreateSymbolicLink(target, linkTarget);
+    }
+
+    private static bool IsSameOrUnder(string path, string root)
+    {
+        var normalizedPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
+        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+        return string.Equals(normalizedPath, normalizedRoot, StringComparison.Ordinal)
+            || normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal);
     }
 }

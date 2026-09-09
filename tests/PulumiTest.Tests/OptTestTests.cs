@@ -24,9 +24,11 @@ public class OptTestTests
         Assert.False(opts.SkipInstall);
         Assert.False(opts.SkipStackCreate);
         Assert.False(opts.TestInPlace);
-        Assert.Equal("correct horse battery staple", opts.ConfigPassphrase);
+        Assert.Equal(OptTest.DefaultConfigPassphrase, opts.ConfigPassphrase);
         Assert.False(opts.UseAmbientBackend);
         Assert.Empty(opts.CustomEnv);
+        Assert.False(opts.DestroyExistingStack);
+        Assert.False(opts.KeepTempDir);
     }
 
     [Fact]
@@ -91,6 +93,22 @@ public class OptTestTests
         var opts = OptTest.DefaultOptions();
         OptTest.Env("FOO", "bar")(opts);
         Assert.Equal(new Dictionary<string, string> { ["FOO"] = "bar" }, opts.CustomEnv);
+    }
+
+    [Fact]
+    public void DestroyExistingStack_SetsDestroyExistingStack()
+    {
+        var opts = OptTest.DefaultOptions();
+        OptTest.DestroyExistingStack()(opts);
+        Assert.True(opts.DestroyExistingStack);
+    }
+
+    [Fact]
+    public void KeepTempDir_SetsKeepTempDir()
+    {
+        var opts = OptTest.DefaultOptions();
+        OptTest.KeepTempDir()(opts);
+        Assert.True(opts.KeepTempDir);
     }
 
     [Fact]
