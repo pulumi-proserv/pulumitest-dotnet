@@ -45,17 +45,22 @@ internal sealed class FakeWorkspace : IWorkspaceHandle
 
     public LocalWorkspace? Workspace => null;
 
+    /// <summary>When true, the next <see cref="CreateOrSelectStackAsync"/> call reports the stack as pre-existing.</summary>
+    public bool StackAlreadyExists { get; set; }
+
     public Task InstallAsync(CancellationToken cancellationToken)
     {
         InstallCalls++;
         return Task.CompletedTask;
     }
 
-    public Task<IStackHandle> CreateOrSelectStackAsync(string stackName, CancellationToken cancellationToken)
+    public Task<(IStackHandle Stack, bool PreExisted)> CreateOrSelectStackAsync(
+        string stackName,
+        CancellationToken cancellationToken)
     {
         StackNames.Add(stackName);
         Stack.Name = stackName;
-        return Task.FromResult<IStackHandle>(Stack);
+        return Task.FromResult<(IStackHandle, bool)>((Stack, StackAlreadyExists));
     }
 }
 

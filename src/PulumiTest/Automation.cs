@@ -13,6 +13,7 @@
 // limitations under the License.
 
 using Pulumi.Automation;
+using Pulumi.Automation.Commands.Exceptions;
 
 namespace PulumiTest;
 
@@ -37,7 +38,11 @@ internal interface IWorkspaceHandle
 
     Task InstallAsync(CancellationToken cancellationToken);
 
-    Task<IStackHandle> CreateOrSelectStackAsync(string stackName, CancellationToken cancellationToken);
+    /// <summary>
+    /// Create the stack, or select it and report that it already existed when
+    /// creation fails because it is already there.
+    /// </summary>
+    Task<(IStackHandle Stack, bool PreExisted)> CreateOrSelectStackAsync(string stackName, CancellationToken cancellationToken);
 }
 
 /// <summary>A stack and the operations PulumiProgram needs from it.</summary>
@@ -98,15 +103,25 @@ internal sealed class LocalAutomationBackend : IAutomationBackend
         public Task InstallAsync(CancellationToken cancellationToken)
             => Workspace.InstallAsync(new InstallOptions(), cancellationToken);
 
-        public async Task<IStackHandle> CreateOrSelectStackAsync(string stackName, CancellationToken cancellationToken)
+        public async Task<(IStackHandle Stack, bool PreExisted)> CreateOrSelectStackAsync(
+            string stackName,
+            CancellationToken cancellationToken)
         {
-            var stack = await LocalWorkspace.CreateOrSelectStackAsync(
-                new LocalProgramArgs(stackName, Workspace.WorkDir)
-                {
-                    EnvironmentVariables = _environmentVariables,
-                },
-                cancellationToken).ConfigureAwait(false);
-            return new LocalStackHandle(stack);
+            var args = new LocalProgramArgs(stackName, Workspace.WorkDir)
+            {
+                EnvironmentVariables = _environmentVariables,
+            };
+
+            try
+            {
+                var stack = await LocalWorkspace.CreateStackAsync(args, cancellationToken).ConfigureAwait(false);
+                return (new LocalStackHandle(stack), false);
+            }
+            catch (StackAlreadyExistsException)
+            {
+                var stack = await LocalWorkspace.SelectStackAsync(args, cancellationToken).ConfigureAwait(false);
+                return (new LocalStackHandle(stack), true);
+            }
         }
     }
 

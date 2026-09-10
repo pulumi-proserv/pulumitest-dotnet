@@ -91,20 +91,30 @@ var program = await PulumiProgram.CreateAsync(
     OptTest.ConfigPassphrase("x")); // Set config passphrase
 ```
 
-| Option                  | Description                         |
-| ----------------------- | ----------------------------------- |
-| `TestInPlace()`         | Run from source directory (no copy) |
-| `SkipInstall()`         | Skip `pulumi install`               |
-| `SkipStackCreate()`     | Skip stack creation (must exist)    |
-| `StackName(name)`       | Set custom stack name               |
-| `ConfigPassphrase(p)`   | Set config passphrase               |
-| `TempDir(path)`         | Set custom temp directory           |
-| `UseAmbientBackend()`   | Use existing `pulumi login` backend |
-| `Env(key, value)`       | Set custom environment variable     |
+| Option                    | Description                                                       |
+| ------------------------- | ------------------------------------------------------------------ |
+| `TestInPlace()`           | Run from source directory (no copy)                                |
+| `SkipInstall()`           | Skip `pulumi install`                                              |
+| `SkipStackCreate()`       | Skip stack creation (must exist)                                   |
+| `StackName(name)`         | Set custom stack name                                              |
+| `ConfigPassphrase(p)`     | Set config passphrase                                              |
+| `TempDir(path)`           | Set custom temp directory                                          |
+| `UseAmbientBackend()`     | Use existing `pulumi login` backend instead of a private one       |
+| `Env(key, value)`         | Set custom environment variable                                    |
+| `DestroyExistingStack()`  | Let `CleanupAsync()` destroy a stack that existed before the run   |
+| `KeepTempDir()`           | Leave the temporary copy on disk after `CleanupAsync()`             |
 
-The temp directory defaults to `./tmp` under the current working directory, or `$PULUMITEST_TEMP_DIR` when set.
+The temp directory defaults to `./tmp` under the current working directory, or `$PULUMITEST_TEMP_DIR` when set. Temp directories are created readable only by the current user and are deleted by `CleanupAsync()`.
 
-Environment variables from `Env()` are passed to the Automation API workspace and take precedence over the defaults, so `Env("PULUMI_BACKEND_URL", "file:///tmp/backend")` runs the stack against a local file backend instead of the ambient one.
+### Isolation defaults
+
+- **Backend.** Each program gets a private local file backend under its temp directory, so test stacks never reach the backend `pulumi login` points at. Pass `UseAmbientBackend()` when a test needs Pulumi Cloud, for example to attach ESC environments, or set `Env("PULUMI_BACKEND_URL", ...)` explicitly.
+- **Pre-existing stacks.** If the stack name already exists, it is selected rather than created and `program.StackPreexisted` is `true`. `CleanupAsync()` will not destroy it unless `DestroyExistingStack()` was given. This matters with `TestInPlace()`, where the default stack name `test` may collide with a real stack in the project directory.
+- **Copied files.** `.git`, `.env` and `.env.*`, `node_modules`, `bin`, `obj`, `__pycache__`, `.venv`, `venv`, and `.terraform` are never copied, and symlinks that point outside the program directory are skipped.
+- **Passphrase.** The default config passphrase is the fixed, publicly known string `correct horse battery staple` (`OptTest.DefaultConfigPassphrase`). Secrets in a test stack's config are not protected by it. Pass `ConfigPassphrase()` with a real value if that matters.
+- **`GetEnvVars()`** returns the passphrase and anything passed via `Env()`. Do not log it.
+
+Environment variables from `Env()` are passed to the Automation API workspace and take precedence over the defaults, so `Env("PULUMI_BACKEND_URL", "file:///tmp/backend")` runs the stack against a local file backend instead of the private one created by default.
 
 A custom `Microsoft.Extensions.Logging.ILogger` or pre-built `Options` can be supplied through the named-argument overload:
 
@@ -154,7 +164,7 @@ refresh.ChangeSummary; // IReadOnlyDictionary<OperationType, int>
 
 ## Cleanup
 
-`CleanupAsync()` destroys the stack and removes it. By default a failed destroy is logged but not thrown, so teardown never masks the test result. Pass `raiseOnError: true` to make a failed destroy fail the teardown instead, which is useful in suites that must not leak cloud resources:
+`CleanupAsync()` destroys the stack, removes it, and deletes the temporary copy of the program. A stack that existed before the run is left in place unless `DestroyExistingStack()` was given. The temporary directory is kept when the destroy fails so state can be inspected. By default a failed destroy is logged but not thrown, so teardown never masks the test result. Pass `raiseOnError: true` to make a failed destroy fail the teardown instead, which is useful in suites that must not leak cloud resources:
 
 ```csharp
 public Task DisposeAsync() => _program.CleanupAsync(raiseOnError: true);
@@ -193,7 +203,7 @@ var workspace = program.LocalWorkspace;   // Pulumi.Automation.LocalWorkspace
 
 ## Development
 
-Prerequisites: .NET 8 SDK (and .NET 6 runtime for the multi-target build), [Pulumi CLI](https://www.pulumi.com/docs/install/), [just](https://github.com/casey/just).
+Prerequisites: .NET 8 SDK, [Pulumi CLI](https://www.pulumi.com/docs/install/), [just](https://github.com/casey/just).
 
 ```bash
 git clone https://github.com/pulumi-proserv/pulumitest-dotnet.git
