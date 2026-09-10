@@ -6,16 +6,32 @@ Sibling ports exist for [Python](https://github.com/pulumi-labs/pulumitest-pytho
 
 ## Installation
 
-```bash
-dotnet add package PulumiTest
-```
-
-Or from a GitHub Release, download the `.nupkg` and add its directory as a package source:
+The package is not published to NuGet.org yet. Install it from a GitHub Release:
 
 ```bash
-dotnet nuget add source ./packages --name pulumitest-local
-dotnet add package PulumiTest --version 0.1.0
+gh release download v0.1.0 -R pulumi-proserv/pulumitest-dotnet -D packages
+dotnet add package PulumiTest --version 0.1.0 --source ./packages
 ```
+
+For a project that installs in CI, commit a `nuget.config` next to the project
+instead of relying on the `--source` flag. Relative paths in a project-level
+config resolve against the config file, so this works from any directory:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="pulumitest-local" value="./packages" />
+  </packageSources>
+</configuration>
+```
+
+Then `dotnet add package PulumiTest --version 0.1.0`. Keep `nuget.org` as a
+source too; the package depends on `Pulumi.Automation` from there.
+
+Do not use `dotnet nuget add source ./packages`: it stores the relative path in
+the user-level NuGet config, where it resolves against that file rather than
+your project, and restore fails with NU1101.
 
 ## Quick Start
 
