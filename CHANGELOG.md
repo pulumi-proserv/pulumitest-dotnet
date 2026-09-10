@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-10
+
 ### Security
 
 - `CleanupAsync()` no longer destroys a stack that existed before the run. Such a stack is selected, `StackPreexisted` is set, and destroy is skipped unless `OptTest.DestroyExistingStack()` is given
@@ -28,5 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CleanupAsync(raiseOnError)` to optionally surface destroy failures, plus `IAsyncDisposable` support
 - Apply `Env()` custom environment variables to the Automation API workspace and stack, so options like `PULUMI_BACKEND_URL` take effect
 - Direct access to Pulumi Automation API via `CurrentStack` and `LocalWorkspace` properties
-- CI pipeline with format check, build, and tests targeting .NET 6 and .NET 8
+- CI pipeline with format check, build, and tests targeting .NET 8
 - Tag-triggered release pipeline publishing a NuGet package to GitHub Releases
+
+[Unreleased]: https://github.com/pulumi-proserv/pulumitest-dotnet/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/pulumi-proserv/pulumitest-dotnet/releases/tag/v0.1.0
