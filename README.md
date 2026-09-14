@@ -9,8 +9,8 @@ Sibling ports exist for [Python](https://github.com/pulumi-labs/pulumitest-pytho
 The package is not published to NuGet.org yet. Install it from a GitHub Release:
 
 ```bash
-gh release download v0.1.0 -R pulumi-proserv/pulumitest-dotnet -D packages
-dotnet add package PulumiTest --version 0.1.0 --source ./packages
+gh release download v0.1.1 -R pulumi-proserv/pulumitest-dotnet -D packages
+dotnet add package PulumiTest --version 0.1.1 --source ./packages
 ```
 
 For a project that installs in CI, commit a `nuget.config` next to the project
@@ -26,7 +26,7 @@ config resolve against the config file, so this works from any directory:
 </configuration>
 ```
 
-Then `dotnet add package PulumiTest --version 0.1.0`. Keep `nuget.org` as a
+Then `dotnet add package PulumiTest --version 0.1.1`. Keep `nuget.org` as a
 source too; the package depends on `Pulumi.Automation` from there.
 
 Do not use `dotnet nuget add source ./packages`: it stores the relative path in

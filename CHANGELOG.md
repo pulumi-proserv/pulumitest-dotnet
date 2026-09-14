@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-14
+
+### Fixed
+
+- README install instructions: the package is installed from a GitHub Release, not NuGet.org, and the previous `dotnet nuget add source` step failed restore with NU1101. The README ships inside the package, so the 0.1.0 nupkg carried the broken instructions.
+
 ## [0.1.0] - 2026-09-10
 
 ### Security
@@ -33,5 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI pipeline with format check, build, and tests targeting .NET 8
 - Tag-triggered release pipeline publishing a NuGet package to GitHub Releases
 
-[Unreleased]: https://github.com/pulumi-proserv/pulumitest-dotnet/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pulumi-proserv/pulumitest-dotnet/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/pulumi-proserv/pulumitest-dotnet/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/pulumi-proserv/pulumitest-dotnet/releases/tag/v0.1.0
