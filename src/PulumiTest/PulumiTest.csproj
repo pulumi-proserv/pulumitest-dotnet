@@ -9,7 +9,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
     <PackageId>PulumiTest</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Authors>Jonathan Davenport</Authors>
     <Company>Pulumi Corporation</Company>
     <Description>.NET testing utilities for Pulumi programs</Description>
