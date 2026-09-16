@@ -22,7 +22,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Pulumi.Automation" Version="3.113.2" />
+    <PackageReference Include="Pulumi.Automation" Version="3.113.3" />
   </ItemGroup>
 
   <ItemGroup>
