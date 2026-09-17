@@ -6,7 +6,7 @@ Sibling ports exist for [Python](https://github.com/pulumi-labs/pulumitest-pytho
 
 ## Installation
 
-The package is not published to NuGet.org yet. Install it from a GitHub Release:
+The package is distributed from GitHub Releases and is not published to NuGet.org. Install it from a release:
 
 ```bash
 gh release download v0.1.1 -R pulumi-proserv/pulumitest-dotnet -D packages
