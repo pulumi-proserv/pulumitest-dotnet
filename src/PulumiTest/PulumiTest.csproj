@@ -23,6 +23,15 @@
 
   <ItemGroup>
     <PackageReference Include="Pulumi.Automation" Version="3.113.3" />
+    <!-- Pulumi.Automation resolves OpenTelemetry 1.9.0, which carries GHSA-g94r-2vxg-569j and
+
+         GHSA-4625-4j76-fww9. Reference the patched versions directly so NuGet's nearest-wins
+
+         rule overrides the transitive ones. Drop when Pulumi.Automation moves past 1.15.3. -->
+
+    <PackageReference Include="OpenTelemetry.Api" Version="1.15.3" />
+
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
   </ItemGroup>
 
   <ItemGroup>
