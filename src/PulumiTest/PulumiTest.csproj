@@ -22,7 +22,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Pulumi.Automation" Version="3.113.3" />
+    <PackageReference Include="Pulumi.Automation" Version="3.114.2" />
     <!-- Pulumi.Automation resolves OpenTelemetry 1.9.0, which carries GHSA-g94r-2vxg-569j and
 
          GHSA-4625-4j76-fww9. Reference the patched versions directly so NuGet's nearest-wins
